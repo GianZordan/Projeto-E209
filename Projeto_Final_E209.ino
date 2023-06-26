@@ -2,34 +2,40 @@
 #include <stdio.h>
 #include <math.h>
 
-#define SGOTAS (1<<PB0)
-#define CONFIGROTINA (1<<PD4)
-#define SULTRA 0
-#define MOTOR (1<<PD6)
-#define BUZZER (1<<PD5) //BUZZER 5V com Oscilador + Config em GPIO DC
-#define VOLUME 0.05
-#define VOLMAX 7.5 //Volume máximo por minuto em ml para 100% da velocidade do motor
+#define sensorGotas (1<<PB0) //Entrada Digital simulada por um pushbottom com Interrupção
+#define sensorUltrassonico 0 //Entrada Analógica simulada por um Trimpot Multivoltas
 
-//Variáveis gerais de funcionamento do projeto ----------------------------------------------------------------------------------------------------------------
-unsigned long int qntGotas = 0;
-float volumeDef; //Volume definido pelo usuário
-float auxVel = 0; //Auxiliar para ajuste da velocidade do motor
-short int segundos = 0; //contagem de segundos
-unsigned int minutos = 0; //Contagem de minutos
-unsigned int minMax; //Tempo de execução da rotina definida pelo usuário
+#define rotina (1<<PD4)
+
+#define motorRotativo (1<<PD6) //Motor DC controlado por um PWM
+
+#define buzzer (1<<PD5) //Buzzer Digital
+
+#define volume 0.05 //volume em ml de cada gota individualmente
+#define volumeMaximo 7.5 //Se o motor estiver em velocidade máxima, pode chegar até 7.5 ml por minuto
+
+//Variáveis em geral
+unsigned long int quantidadeGotas = 0; //Quantidade total de gotas caídas
 bool contaGotas; //habilita a contagem de gotas dentro do período definido
-int contagem = 0;
-bool auxConfig = true; //Booleano auxiliar para travar a execução do código até que se entre com os valores da rotina do conta gotas
+bool auxConfig = true; //auxiliar para travar a execução do código até que se entre com os valores da rotina do conta gotas
 
-//Variáveis de uso da comunicação serial -----------------------------------------------------------------------------------------------------------------------
-char RX_buffer[32];
+float volumeUsuario; //Volume definido pelo usuário
+unsigned int tempoUsuario; //Tempo de execução da rotina definida pelo usuário
+
+float varAux = 0; //Variável auxiliar para ajuste da velocidade do motor
+int contagem = 0; //auxiliar para contagem de tempo da rotina
+
+unsigned int minutos = 0; //Contagem de minutos
+short int segundos = 0; //contagem de segundos
+
+//Variáveis de uso da comunicação serial
+char RX_buffer[32]; 
 char RX_index = 0;
 char old_rx_hs[32]; // Buffer para estado anterior do RX
 char TX_str[10]; //String auxiliar para saída de dados
 
-//Funções para uso da comunicação serial -----------------------------------------------------------------------------------------------------------------------
-void UART_init(int baud){ // Função de configuração do UART --------------------
-
+//Funções para uso da comunicação serial
+void UART_init(int baud){ // Função de configuração do UART
   int MYUBRR = 16000000 / 16 / baud - 1;
   UBRR0H = (unsigned char)(MYUBRR >> 8);
   UBRR0L = (unsigned char)(MYUBRR);
@@ -37,8 +43,7 @@ void UART_init(int baud){ // Função de configuração do UART ----------------
   UCSR0B = (1 << RXEN0) | (1 << TXEN0) | (1 << RXCIE0);
 }
 
-void UART_send(char *TX_buffer){ // Função para envio de dados via UART --------------------
-
+void UART_send(char *TX_buffer){ // Função para envio de dados via UART
     while (*TX_buffer != 0){
       UDR0 = *TX_buffer;
       while (!(UCSR0A & (1 << UDRE0))){};
@@ -46,12 +51,12 @@ void UART_send(char *TX_buffer){ // Função para envio de dados via UART ------
     }
 }
 
-void limpa_RX_buffer(void) // Limpa o buffer de entrada e saída --------------------
-{
+void limpa_RX_buffer(void){ // Limpa o buffer de entrada e saída 
     unsigned char dummy;
     while (UCSR0A & (1 << RXC0)){
       dummy = UDR0;
     }
+
     RX_index = 0;
 
     for (int i = 0; i < 32; i++){
@@ -60,10 +65,8 @@ void limpa_RX_buffer(void) // Limpa o buffer de entrada e saída ---------------
     }
 }
 
-// Funções Auxiliares para teste --------------------------------------------------------------------------------------------------------------------------------
-//https://www.geeksforgeeks.org/convert-floating-point-number-string/
-void reverse(char* str, int len)
-{
+// Funções Auxiliares para teste e convesão de float para string (funções padrões para tal função)
+void reverse(char* str, int len){
     int i = 0, j = len - 1, temp;
     while (i < j) {
         temp = str[i];
@@ -74,20 +77,17 @@ void reverse(char* str, int len)
     }
 }
  
-// Converts a given integer x to string str[].
-// d is the number of digits required in the output.
-// If d is more than the number of digits in x,
-// then 0s are added at the beginning.
-int intToStr(int x, char str[], int d)
-{
+// Converte um inteiro dado x para uma string str[]
+// d é o número de dígitos necessários na saída
+// Se d for maior do que o número de dígitos em x, então zeros são adicionados no início
+int intToStr(int x, char str[], int d){
     int i = 0;
     while (x) {
         str[i++] = (x % 10) + '0';
         x = x / 10;
     }
  
-    // If number of digits required is more, then
-    // add 0s at the beginning
+    // Se o número de dígitos necessários for maior, adicionar zeros no início
     while (i < d)
         str[i++] = '0';
  
@@ -96,25 +96,22 @@ int intToStr(int x, char str[], int d)
     return i;
 }
  
-// Converts a floating-point/double number to a string.
-void ftoa(float n, char* res, int afterpoint)
-{
-    // Extract integer part
+// Converte um número float/double em string
+void ftoa(float n, char* res, int afterpoint){
+    // Extrai somente a parte inteira do valor
     int ipart = (int)n;
  
-    // Extract floating part
+    // Extrai somente a parte decimal do valor
     float fpart = n - (float)ipart;
  
-    // convert integer part to string
+    // Convere a parte inteira para string
     int i = intToStr(ipart, res, 0);
  
-    // check for display option after point
+    // Verificando a opção de exibição após o ponto
     if (afterpoint != 0) {
         res[i] = '.'; // add dot
  
-        // Get the value of fraction part upto given no.
-        // of points after dot. The third parameter
-        // is needed to handle cases like 233.007
+        // Obtém o valor da parte da fração até o número de pontos. O terceiro parâmetro é necessário para lidar com casos como 233.007
         fpart = fpart * pow(10, afterpoint);
  
         intToStr((int)fpart, res + i + 1, afterpoint);
@@ -127,14 +124,14 @@ void config_rotina(){
     UART_send("Entre com o volume:\n");
     while(auxConfig==true)
     _delay_ms(50);
-    volumeDef = atoi(RX_buffer);
+    volumeUsuario = atoi(RX_buffer);
     limpa_RX_buffer();
     auxConfig = true;
 
     UART_send("\nEntre com o Tempo de infusão em minutos:\n");
     while(auxConfig==true)
     _delay_ms(50);
-    minMax = atoi(RX_buffer);
+    tempoUsuario = atoi(RX_buffer);
     limpa_RX_buffer();
     contaGotas = true;
 
@@ -142,20 +139,20 @@ void config_rotina(){
 
     TCCR2B = (1<<CS21); //prescaler 8
 
-    auxVel = volumeDef/minMax;
-    auxVel = (auxVel/VOLMAX)*255;
-    if(auxVel > 255)
-    auxVel = 255;
-    OCR0A = (int)(auxVel);  
+    varAux = volumeUsuario/tempoUsuario;
+    varAux = (varAux/volumeMaximo)*255;
+    if(varAux > 255)
+    varAux = 255;
+    OCR0A = (int)(varAux);  
 }
 
-void calculaPercent(){  //--------------------------------------Função para cálculo da porcentagem de erro - FINALIZADO-----------------------------------------
+void calculaPercent(){  //Função para cálculo da porcentagem de erro
 
   float erroPercent; //Porcentagem de erro em relação a leitura/definição
 
-  erroPercent = qntGotas*VOLUME;
-  erroPercent = (erroPercent/minMax*1.0);
-  erroPercent = ((erroPercent-(volumeDef/minMax*1.0))/(volumeDef/minMax*1.0))*100.0;
+  erroPercent = quantidadeGotas*volume;
+  erroPercent = (erroPercent/tempoUsuario*1.0);
+  erroPercent = ((erroPercent-(volumeUsuario/tempoUsuario*1.0))/(volumeUsuario/tempoUsuario*1.0))*100.0;
   
   UART_send("\nErro de Porcentagem: ");
   
@@ -164,30 +161,32 @@ void calculaPercent(){  //--------------------------------------Função para c�
     UART_send(TX_str);
     UART_send("% acima do esperado;\n");
   }
+
   else if(erroPercent < 0){
     ftoa((erroPercent*(-1)),TX_str,2);
     UART_send(TX_str);
     UART_send("% abaixo do esperado;\n");
   }
+
   else{
     UART_send("0% sem erros;\n");
   }
 }
 
-int main(){ //------------------------------------------------------------------Função int main()----------------------------------------------------------------
+int main(){
 
   //Inicialização do UART com Baud Rate de 9600
   UART_init(9600);
 
   //Config I/O
-  DDRD = MOTOR+BUZZER;
-  PORTD &= ~(MOTOR+BUZZER);
-  PORTD |= CONFIGROTINA;
+  DDRD = motorRotativo+buzzer;
+  PORTD &= ~(motorRotativo+buzzer);
+  PORTD |= rotina;
 
   //Configuração PCINT Portal B - Pino PB0
   PCICR = (1<<PCIE0)|(1<<PCIE2);
-  PCMSK0 = SGOTAS;
-  PCMSK2 = CONFIGROTINA;
+  PCMSK0 = sensorGotas;
+  PCMSK2 = rotina;
 
   //Configuração PWM
   TCCR0A = (1<<WGM01)|(1<<WGM00)|(1<<COM0A1);
@@ -197,7 +196,7 @@ int main(){ //------------------------------------------------------------------
   ADMUX = (0 << REFS1) + (1 << REFS0); //Utiliza 5V como referência (1023)
 	ADCSRA = (1 << ADEN) + (1 << ADPS2) + (1 << ADPS1) + (1 << ADPS0); //Habilita ADC e PS 128 (10 bits)
 	ADCSRB = 0; //Conversão Única
-  ADMUX = (ADMUX & 0xF8) | SULTRA; //Configura o pino PC0 para leitura ADC
+  ADMUX = (ADMUX & 0xF8) | sensorUltrassonico; //Configura o pino PC0 para leitura ADC
   DIDR0 = (1 << PC0); //Desabilita o PC0 como pino digital - Não obrigatório
 
   //Config Timer - Sem ligar (PS desativado)
@@ -226,29 +225,32 @@ int main(){ //------------------------------------------------------------------
 		ultra = (leituraAD * 5) / 1023.0; //Cálculo da Tensão
 
     if((ultra < 3.75) && (contaGotas == true)){
-      PORTD |= BUZZER;
+      PORTD |= buzzer;
       OCR0A = 0;
       TCCR2B &= ~((1<<CS22)|(1<<CS21)|(1<<CS20));
     }
+
     else if(contaGotas == true){
-      PORTD &= ~BUZZER;
-      OCR0A = (int)(auxVel);
+      PORTD &= ~buzzer;
+      OCR0A = (int)(varAux);
       TCCR2B = (1<<CS21);
     }
-
   }
 }
 
-//Interrupção Sensor Conta Gotas (BOTÃO PB0) ------------------------------------Interrupção PCINT Para contagem de gotas - FINALIZADO---------------------------
+//Interrupção Sensor Conta Gotas (BOTÃO PB0)
+//Interrupção PCINT Para contagem de gotas
+
 ISR(PCINT0_vect){
   
-  if(((PINB & SGOTAS) == SGOTAS)){
+  if(((PINB & sensorGotas) == sensorGotas)){
     return;
   }
+
   else if(contaGotas == true){
     PCICR &= ~(1<<PCIE0);
-    qntGotas++;
-    itoa(qntGotas,TX_str,10);
+    quantidadeGotas++;
+    itoa(quantidadeGotas,TX_str,10);
     UART_send(TX_str);
     UART_send("\n");
   }
@@ -257,7 +259,7 @@ ISR(PCINT0_vect){
 
 ISR(PCINT2_vect){
   
-  if(!((PIND & CONFIGROTINA) == CONFIGROTINA)){
+  if(!((PIND & rotina) == rotina)){
     return;
   }
   else if(contaGotas == false){
@@ -267,7 +269,8 @@ ISR(PCINT2_vect){
   PCICR |= (1<<PCIE1);
 }
 
-//Timer para contagem do tempo de execução da rotina -------------Interrupção do Timer para contagem do tempo e termino de Rotina - FINALIZADO-------------------
+//Timer para contagem do tempo de execução da rotina 
+//Interrupção do Timer para contagem do tempo e termino de Rotina
 ISR(TIMER2_COMPA_vect){
 	contagem++;
   if(contagem == 5000){
@@ -276,10 +279,10 @@ ISR(TIMER2_COMPA_vect){
     if(segundos == 60){
       segundos=0;
       minutos++;
-      if(minMax == minutos){
+      if(tempoUsuario == minutos){
         minutos = 0;
-        auxVel = 0;
-        OCR0A = (int)(auxVel);
+        varAux = 0;
+        OCR0A = (int)(varAux);
         contaGotas = false;
         TCCR2B &= ~((1<<CS22)|(1<<CS21)|(1<<CS20)); //Timer desligado
         UART_send("\nRotina Encerrada!\n");
@@ -289,7 +292,8 @@ ISR(TIMER2_COMPA_vect){
   }
 }
 
-//Função ISR que salva um array de dados recebidos via UART -------------Interrupção de recepção de dados para salvar os dados recebidos - FINALIZADO------------
+//Função ISR que salva um array de dados recebidos via UART 
+//Interrupção de recepção de dados para salvar os dados recebidos
 ISR(USART_RX_vect){ 
 
   RX_buffer[RX_index] = UDR0;
